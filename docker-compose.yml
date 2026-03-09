@@ -1,0 +1,116 @@
+version: "3.9"
+
+services:
+  # ─── Message Broker ───────────────────────────────────────────
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: factory-stream-mqtt
+    ports:
+      - "1883:1883"
+      - "9001:9001"
+    volumes:
+      - ./docker/mosquitto.conf:/mosquitto/config/mosquitto.conf
+    restart: unless-stopped
+
+  # ─── Time-Series Database ─────────────────────────────────────
+  influxdb:
+    image: influxdb:2.7
+    container_name: factory-stream-influx
+    ports:
+      - "8086:8086"
+    environment:
+      DOCKER_INFLUXDB_INIT_MODE: setup
+      DOCKER_INFLUXDB_INIT_USERNAME: admin
+      DOCKER_INFLUXDB_INIT_PASSWORD: factory-stream-secret
+      DOCKER_INFLUXDB_INIT_ORG: factory-stream
+      DOCKER_INFLUXDB_INIT_BUCKET: ot-data
+      DOCKER_INFLUXDB_INIT_ADMIN_TOKEN: factory-stream-dev-token
+    volumes:
+      - influx-data:/var/lib/influxdb2
+    restart: unless-stopped
+
+  # ─── PostgreSQL + TimescaleDB ─────────────────────────────────
+  timescaledb:
+    image: timescale/timescaledb:latest-pg15
+    container_name: factory-stream-timescale
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: factory_stream
+    volumes:
+      - timescale-data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  # ─── MQTT Simulator ───────────────────────────────────────────
+  mqtt-simulator:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.simulator
+    container_name: factory-stream-mqtt-sim
+    environment:
+      MQTT_HOST: mosquitto
+      MQTT_PORT: 1883
+      PUBLISH_INTERVAL: "1.0"
+    depends_on:
+      - mosquitto
+    restart: unless-stopped
+
+  # ─── Modbus Simulator ─────────────────────────────────────────
+  modbus-simulator:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.simulator
+    container_name: factory-stream-modbus-sim
+    command: python -m ingestion.simulators.modbus_simulator
+    environment:
+      MODBUS_HOST: "0.0.0.0"
+      MODBUS_PORT: "502"
+    ports:
+      - "502:502"
+    restart: unless-stopped
+
+  # ─── OPC-UA Simulator ─────────────────────────────────────────
+  opcua-simulator:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.simulator
+    container_name: factory-stream-opcua-sim
+    command: python -m ingestion.simulators.opcua_simulator
+    environment:
+      OPCUA_HOST: "0.0.0.0"
+      OPCUA_PORT: "4840"
+    ports:
+      - "4840:4840"
+    restart: unless-stopped
+
+  # ─── Pipeline + API ───────────────────────────────────────────
+  pipeline:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.pipeline
+    container_name: factory-stream-pipeline
+    ports:
+      - "8000:8000"
+    environment:
+      MQTT_HOST: mosquitto
+      MQTT_PORT: "1883"
+      INFLUXDB_URL: http://influxdb:8086
+      INFLUXDB_TOKEN: factory-stream-dev-token
+      INFLUXDB_ORG: factory-stream
+      INFLUXDB_BUCKET: ot-data
+      TIMESCALE_HOST: timescaledb
+      TIMESCALE_PORT: "5432"
+      TIMESCALE_DB: factory_stream
+      TIMESCALE_USER: postgres
+      TIMESCALE_PASSWORD: postgres
+    depends_on:
+      - mosquitto
+      - influxdb
+      - timescaledb
+    restart: unless-stopped
+
+volumes:
+  influx-data:
+  timescale-data:
