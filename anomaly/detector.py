@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import logging
 from collections import defaultdict, deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 from normalizer.schema import AnomalyFlag, MachineReading
@@ -53,7 +53,7 @@ class RollingStats:
         variance = sum((v - mean) ** 2 for v in self._values) / len(self._values)
         std = variance ** 0.5
         if std < 1e-9:
-            return 0.0
+            return abs(value - mean)
         return abs(value - mean) / std
 
     def is_flatline(self, tolerance: float = 0.0001, window: int = 10) -> bool:
@@ -108,13 +108,13 @@ class MachineAnomalyDetector:
                     flags.append(AnomalyFlag.DRIFT)
                     scores.append(min(0.7, z / (config.zscore_threshold * 2)))
 
-            # Flatline detection
-            if stats.is_flatline(config.flatline_tolerance, config.flatline_window):
-                flags.append(AnomalyFlag.FLATLINE)
-                scores.append(0.6)
-
             # Update stats after analysis
             stats.update(value)
+
+            # Flatline detection should include the current sample.
+            if stats.is_flatline(config.flatline_tolerance, config.flatline_window):
+                flags.append(AnomalyFlag.FLATLINE)
+                scores.append(0.4)
 
         # Deduplicate flags
         flags = list(set(flags))
@@ -129,10 +129,16 @@ class AnomalyDetectionPipeline:
     Manages per-machine detectors and annotates MachineReadings in-place.
     """
 
-    def __init__(self, window: int = 60, configs: Optional[Dict[str, MetricConfig]] = None):
+    def __init__(
+        self,
+        window: int = 60,
+        configs: Optional[Dict[str, MetricConfig]] = None,
+        version: str = "rules-v1",
+    ):
         self.window = window
         self.configs = configs or DEFAULT_METRIC_CONFIGS
         self._detectors: Dict[str, MachineAnomalyDetector] = {}
+        self.version = version
 
     def _get_detector(self, machine_id: str) -> MachineAnomalyDetector:
         if machine_id not in self._detectors:
@@ -149,6 +155,7 @@ class AnomalyDetectionPipeline:
 
         reading.anomaly_score = score
         reading.anomaly_flags = flags
+        reading.detector_version = self.version
 
         if flags:
             logger.warning(

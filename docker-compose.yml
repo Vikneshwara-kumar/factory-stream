@@ -1,13 +1,11 @@
-version: "3.9"
-
 services:
   # ─── Message Broker ───────────────────────────────────────────
   mosquitto:
     image: eclipse-mosquitto:2
-    container_name: factory-stream-mqtt
+    container_name: ${COMPOSE_PROJECT_NAME:-factory-stream}-mqtt
     ports:
-      - "1883:1883"
-      - "9001:9001"
+      - "${MQTT_PUBLISH_PORT:-1883}:1883"
+      - "${MQTT_WS_PUBLISH_PORT:-9001}:9001"
     volumes:
       - ./docker/mosquitto.conf:/mosquitto/config/mosquitto.conf
     restart: unless-stopped
@@ -15,9 +13,9 @@ services:
   # ─── Time-Series Database ─────────────────────────────────────
   influxdb:
     image: influxdb:2.7
-    container_name: factory-stream-influx
+    container_name: ${COMPOSE_PROJECT_NAME:-factory-stream}-influx
     ports:
-      - "8086:8086"
+      - "${INFLUXDB_PUBLISH_PORT:-8086}:8086"
     environment:
       DOCKER_INFLUXDB_INIT_MODE: setup
       DOCKER_INFLUXDB_INIT_USERNAME: admin
@@ -32,9 +30,9 @@ services:
   # ─── PostgreSQL + TimescaleDB ─────────────────────────────────
   timescaledb:
     image: timescale/timescaledb:latest-pg15
-    container_name: factory-stream-timescale
+    container_name: ${COMPOSE_PROJECT_NAME:-factory-stream}-timescale
     ports:
-      - "5432:5432"
+      - "${TIMESCALE_PUBLISH_PORT:-5432}:5432"
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
@@ -48,7 +46,7 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile.simulator
-    container_name: factory-stream-mqtt-sim
+    container_name: ${COMPOSE_PROJECT_NAME:-factory-stream}-mqtt-sim
     environment:
       MQTT_HOST: mosquitto
       MQTT_PORT: 1883
@@ -62,13 +60,13 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile.simulator
-    container_name: factory-stream-modbus-sim
+    container_name: ${COMPOSE_PROJECT_NAME:-factory-stream}-modbus-sim
     command: python -m ingestion.simulators.modbus_simulator
     environment:
       MODBUS_HOST: "0.0.0.0"
       MODBUS_PORT: "502"
     ports:
-      - "502:502"
+      - "${MODBUS_PUBLISH_PORT:-502}:502"
     restart: unless-stopped
 
   # ─── OPC-UA Simulator ─────────────────────────────────────────
@@ -76,26 +74,26 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile.simulator
-    container_name: factory-stream-opcua-sim
+    container_name: ${COMPOSE_PROJECT_NAME:-factory-stream}-opcua-sim
     command: python -m ingestion.simulators.opcua_simulator
     environment:
       OPCUA_HOST: "0.0.0.0"
       OPCUA_PORT: "4840"
     ports:
-      - "4840:4840"
+      - "${OPCUA_PUBLISH_PORT:-4840}:4840"
     restart: unless-stopped
 
-  # ─── Pipeline + API ───────────────────────────────────────────
-  pipeline:
+  # ─── Worker ───────────────────────────────────────────────────
+  worker:
     build:
       context: .
       dockerfile: docker/Dockerfile.pipeline
-    container_name: factory-stream-pipeline
-    ports:
-      - "8000:8000"
+    container_name: ${COMPOSE_PROJECT_NAME:-factory-stream}-worker
+    command: python -m pipeline worker
     environment:
       MQTT_HOST: mosquitto
       MQTT_PORT: "1883"
+      REGISTRY_PATH: /app/config/device_registry.example.yaml
       INFLUXDB_URL: http://influxdb:8086
       INFLUXDB_TOKEN: factory-stream-dev-token
       INFLUXDB_ORG: factory-stream
@@ -105,12 +103,39 @@ services:
       TIMESCALE_DB: factory_stream
       TIMESCALE_USER: postgres
       TIMESCALE_PASSWORD: postgres
+      EVENT_STORE_PATH: /var/lib/factory-stream/events.jsonl
+      RUNTIME_STATE_PATH: /var/lib/factory-stream/runtime-state.json
+    volumes:
+      - pipeline-state:/var/lib/factory-stream
     depends_on:
       - mosquitto
       - influxdb
       - timescaledb
+      - modbus-simulator
+      - opcua-simulator
+    restart: unless-stopped
+
+  # ─── Query API ────────────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.pipeline
+    container_name: ${COMPOSE_PROJECT_NAME:-factory-stream}-api
+    command: python -m pipeline api
+    ports:
+      - "${API_PUBLISH_PORT:-8000}:8000"
+    environment:
+      API_HOST: 0.0.0.0
+      API_PORT: "8000"
+      EVENT_STORE_PATH: /var/lib/factory-stream/events.jsonl
+      RUNTIME_STATE_PATH: /var/lib/factory-stream/runtime-state.json
+    volumes:
+      - pipeline-state:/var/lib/factory-stream
+    depends_on:
+      - worker
     restart: unless-stopped
 
 volumes:
   influx-data:
   timescale-data:
+  pipeline-state:

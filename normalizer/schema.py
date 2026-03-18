@@ -5,11 +5,13 @@ All protocol adapters normalize their raw payloads into this unified model.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class SourceProtocol(str, Enum):
@@ -63,9 +65,14 @@ class MachineReading(BaseModel):
     plant_id: Optional[str] = Field(None, description="Plant / facility identifier")
     line_id: Optional[str] = Field(None, description="Production line identifier")
     source_protocol: SourceProtocol = Field(..., description="Originating protocol")
+    event_id: Optional[str] = Field(None, description="Stable idempotency key for the reading")
     timestamp: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
         description="UTC timestamp of the reading",
+    )
+    ingested_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        description="UTC timestamp when the pipeline accepted the reading",
     )
     metrics: MetricPayload = Field(..., description="Sensor metrics")
     status: MachineStatus = Field(
@@ -85,8 +92,16 @@ class MachineReading(BaseModel):
     anomaly_flags: List[AnomalyFlag] = Field(
         default_factory=list, description="Specific anomaly types detected"
     )
+    pipeline_version: str = Field(
+        default="phase3-runtime-v1",
+        description="Pipeline version that processed the reading",
+    )
+    detector_version: str = Field(
+        default="rules-v1",
+        description="Detector version that produced the anomaly metadata",
+    )
 
-    @field_validator("timestamp", mode="before")
+    @field_validator("timestamp", "ingested_at", mode="before")
     @classmethod
     def ensure_utc(cls, v):
         if isinstance(v, str):
@@ -94,6 +109,26 @@ class MachineReading(BaseModel):
         if v.tzinfo is None:
             v = v.replace(tzinfo=timezone.utc)
         return v
+
+    @model_validator(mode="after")
+    def ensure_event_id(self) -> "MachineReading":
+        if not self.event_id:
+            self.event_id = self.build_event_id()
+        return self
+
+    def build_event_id(self) -> str:
+        payload = {
+            "machine_id": self.machine_id,
+            "plant_id": self.plant_id,
+            "line_id": self.line_id,
+            "source_protocol": self.source_protocol.value,
+            "timestamp": self.timestamp.isoformat(),
+            "metrics": self.metrics.to_dict(),
+            "status": self.status.value,
+        }
+        return hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
 
     def is_anomalous(self, threshold: float = 0.5) -> bool:
         return self.anomaly_score >= threshold
@@ -103,6 +138,7 @@ class MachineReading(BaseModel):
         return {
             "measurement": "machine_readings",
             "tags": {
+                "event_id": self.event_id,
                 "machine_id": self.machine_id,
                 "plant_id": self.plant_id or "unknown",
                 "line_id": self.line_id or "unknown",
@@ -113,6 +149,8 @@ class MachineReading(BaseModel):
                 **self.metrics.to_dict(),
                 "anomaly_score": self.anomaly_score,
                 "anomaly_flags": ",".join(self.anomaly_flags) or "none",
+                "pipeline_version": self.pipeline_version,
+                "detector_version": self.detector_version,
             },
             "time": self.timestamp.isoformat(),
         }
@@ -120,6 +158,8 @@ class MachineReading(BaseModel):
     def to_timescale_row(self) -> Dict[str, Any]:
         """Format for TimescaleDB INSERT."""
         return {
+            "event_id": self.event_id,
+            "ingested_at": self.ingested_at,
             "time": self.timestamp,
             "machine_id": self.machine_id,
             "plant_id": self.plant_id,
@@ -127,6 +167,8 @@ class MachineReading(BaseModel):
             "protocol": self.source_protocol.value,
             "status": self.status.value,
             "anomaly_score": self.anomaly_score,
-            "anomaly_flags": self.anomaly_flags,
+            "anomaly_flags": [flag.value for flag in self.anomaly_flags],
+            "pipeline_version": self.pipeline_version,
+            "detector_version": self.detector_version,
             **self.metrics.to_dict(),
         }

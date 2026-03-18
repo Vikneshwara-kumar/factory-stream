@@ -24,6 +24,8 @@ except ImportError:
 
 CREATE_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS machine_readings (
+    event_id        TEXT,
+    ingested_at     TIMESTAMPTZ,
     time            TIMESTAMPTZ     NOT NULL,
     machine_id      TEXT            NOT NULL,
     plant_id        TEXT,
@@ -40,8 +42,17 @@ CREATE TABLE IF NOT EXISTS machine_readings (
     humidity        DOUBLE PRECISION,
     flow_rate       DOUBLE PRECISION,
     anomaly_score   DOUBLE PRECISION DEFAULT 0.0,
-    anomaly_flags   TEXT[]          DEFAULT '{}'
+    anomaly_flags   TEXT[]          DEFAULT '{}',
+    pipeline_version TEXT,
+    detector_version TEXT
 );
+"""
+
+ALTER_TABLE_SQL = """
+ALTER TABLE machine_readings ADD COLUMN IF NOT EXISTS event_id TEXT;
+ALTER TABLE machine_readings ADD COLUMN IF NOT EXISTS ingested_at TIMESTAMPTZ;
+ALTER TABLE machine_readings ADD COLUMN IF NOT EXISTS pipeline_version TEXT;
+ALTER TABLE machine_readings ADD COLUMN IF NOT EXISTS detector_version TEXT;
 """
 
 CREATE_HYPERTABLE_SQL = """
@@ -52,6 +63,9 @@ SELECT create_hypertable(
 """
 
 CREATE_INDEXES_SQL = """
+CREATE UNIQUE INDEX IF NOT EXISTS idx_machine_readings_event_id
+    ON machine_readings (event_id);
+
 CREATE INDEX IF NOT EXISTS idx_machine_readings_machine_id
     ON machine_readings (machine_id, time DESC);
 
@@ -63,17 +77,17 @@ CREATE INDEX IF NOT EXISTS idx_machine_readings_anomaly
 
 INSERT_SQL = """
 INSERT INTO machine_readings (
-    time, machine_id, plant_id, line_id, protocol, status,
+    event_id, ingested_at, time, machine_id, plant_id, line_id, protocol, status,
     temperature, vibration, rpm, pressure, power_kw,
     current_a, voltage_v, humidity, flow_rate,
-    anomaly_score, anomaly_flags
+    anomaly_score, anomaly_flags, pipeline_version, detector_version
 ) VALUES (
-    %(time)s, %(machine_id)s, %(plant_id)s, %(line_id)s,
+    %(event_id)s, %(ingested_at)s, %(time)s, %(machine_id)s, %(plant_id)s, %(line_id)s,
     %(protocol)s, %(status)s,
     %(temperature)s, %(vibration)s, %(rpm)s, %(pressure)s, %(power_kw)s,
     %(current_a)s, %(voltage_v)s, %(humidity)s, %(flow_rate)s,
-    %(anomaly_score)s, %(anomaly_flags)s
-);
+    %(anomaly_score)s, %(anomaly_flags)s, %(pipeline_version)s, %(detector_version)s
+) ON CONFLICT (event_id) DO NOTHING;
 """
 
 
@@ -121,6 +135,7 @@ class TimescaleDBWriter:
         try:
             with self._conn.cursor() as cur:
                 cur.execute(CREATE_TABLE_SQL)
+                cur.execute(ALTER_TABLE_SQL)
                 cur.execute(CREATE_HYPERTABLE_SQL)
                 cur.execute(CREATE_INDEXES_SQL)
             self._conn.commit()
@@ -137,7 +152,21 @@ class TimescaleDBWriter:
 
         row = reading.to_timescale_row()
         # Ensure all columns have defaults
-        for col in ["temperature", "vibration", "rpm", "pressure", "power_kw", "current_a", "voltage_v", "humidity", "flow_rate"]:
+        for col in [
+            "temperature",
+            "vibration",
+            "rpm",
+            "pressure",
+            "power_kw",
+            "current_a",
+            "voltage_v",
+            "humidity",
+            "flow_rate",
+            "event_id",
+            "ingested_at",
+            "pipeline_version",
+            "detector_version",
+        ]:
             row.setdefault(col, None)
 
         try:
@@ -157,7 +186,21 @@ class TimescaleDBWriter:
         rows = []
         for reading in readings:
             row = reading.to_timescale_row()
-            for col in ["temperature", "vibration", "rpm", "pressure", "power_kw", "current_a", "voltage_v", "humidity", "flow_rate"]:
+            for col in [
+                "temperature",
+                "vibration",
+                "rpm",
+                "pressure",
+                "power_kw",
+                "current_a",
+                "voltage_v",
+                "humidity",
+                "flow_rate",
+                "event_id",
+                "ingested_at",
+                "pipeline_version",
+                "detector_version",
+            ]:
                 row.setdefault(col, None)
             rows.append(row)
 

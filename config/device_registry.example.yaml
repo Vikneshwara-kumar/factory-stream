@@ -1,0 +1,20 @@
+mqtt:
+  enabled: true
+  broker_host: mosquitto
+  broker_port: 1883
+  topic_filter: factory/+/+/+/telemetry
+  username: ""
+  password: ""
+  tls_enabled: false
+
+modbus_devices:
+  - machine_id: MODBUS-001
+    host: modbus-simulator
+    port: 502
+    unit_id: 1
+    plant_id: plant-A
+    line_id: line-2
+    poll_interval: 1.0
+    register_addresses: [40001, 40002, 40003, 40004, 40005, 40006, 40007, 40010]
+
+opcua_devices: []

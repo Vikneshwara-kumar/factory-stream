@@ -198,6 +198,12 @@ class TestRollingStats:
         assert z is not None
         assert z > 5.0
 
+    def test_zscore_zero_variance_still_flags_changed_value(self):
+        rs = RollingStats(window=60)
+        for _ in range(20):
+            rs.update(50.0)
+        assert rs.zscore(51.0) == 1.0
+
     def test_flatline_detection(self):
         rs = RollingStats(window=60)
         for _ in range(20):
